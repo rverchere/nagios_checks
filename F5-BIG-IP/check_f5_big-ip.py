@@ -7,7 +7,7 @@ F5 Load-Balancer running BIG-IP OS Nagios plugin
 2018-12-12 Eric Belhomme <rico-github@ricozome.net> - added mem_tmm and sessions modes, fixed perfdata
 Published under MIT license
 """
-import argparse, netsnmp
+import argparse, netsnmp, re
 
 __author__ = 'Eric Belhomme'
 __contact__ = 'rico-github@ricozome.net'
@@ -29,7 +29,7 @@ F5 Load-Balancer running BIG-IP OS Nagios plugin
 
 -= modes =-
 -----------
-* help - This help     
+* help - This help
 * health - Reports global system health
 * http - Reports global HTTP requests
 * enumvs - enumerates 'VirtualServers' configured on the appliance
@@ -46,7 +46,7 @@ F5 Load-Balancer running BIG-IP OS Nagios plugin
     print('-= nodestats mode =-\n--------------------\n' + get_node_stats.__doc__)
     print('-= mem_tmm mode =-\n--------------------\n' + get_mem_tmm.__doc__)
     print('-= sessions mode =-\n--------------------\n' + get_sessions.__doc__)
-   
+
     print("---\nCopyright {author} <{authmail}> under {license} license".format(
         author = __author__, authmail = __contact__, license = __license__))
     exit(0)
@@ -103,6 +103,9 @@ flags, passed with `--arg1` command-lien parameter:
     fan = { 'bad': 0, 'good': 0, 'missing': 0}
     retcode = 0
 
+    if not args.arg1:
+      args.arg1='empty'
+
     # PSU info
     vals = snmpSession.walk(netsnmp.VarList(netsnmp.Varbind(oid_status_psu)))
     if vals:
@@ -119,16 +122,16 @@ flags, passed with `--arg1` command-lien parameter:
                 pass
             elif 'warnmissingpsu' in args.arg1:
                 retcode = 1
-                message.append("{} PSU missing".format(psu['missing']))
+                message.append("{} PSU missing, ".format(psu['missing']))
             else:
                 retcode = 2
-                message.append("{} PSU missing".format(psu['missing']))
-        
-        if psu['bad'] > int(warn[0]):
-            retcode = 1
-            message.append("{} PSU failed".format(psu['bad']))
-        elif psu['bad'] > int(crit[0]):
+                message.append("{} PSU missing, ".format(psu['missing']))
+
+        if psu['bad'] >= int(crit[0]):
             retcode = 2
+            message.append("{} PSU failed".format(psu['bad']))
+        elif psu['bad'] >= int(warn[0]):
+            retcode = 1
             message.append("{} PSU failed".format(psu['bad']))
         else:
             message.append("{} PSU OK".format(psu['good']))
@@ -145,9 +148,9 @@ flags, passed with `--arg1` command-lien parameter:
         txt = ''
         counter = 1
         for item in vals:
-            if int(item) > int(warn[1]):
+            if int(item) >= int(warn[1]):
                 ret = 1
-            if int(item) > int(crit[1]):
+            if int(item) >= int(crit[1]):
                 ret = 2
             if len(txt):
                 txt += ', '
@@ -181,14 +184,14 @@ flags, passed with `--arg1` command-lien parameter:
             else:
                 ret = 2
                 message.append("{} fan missing".format(fan['missing']))
-        
-        if fan['bad'] > int(warn[2]):
-            if ret < 1:
-                ret = 1
-            message.append("{} fan failed".format(fan['bad']))
-        elif fan['bad'] > int(crit[2]):
+
+        if fan['bad'] >= int(crit[2]):
             if ret < 2:
                 ret = 2
+            message.append("{} fan failed".format(fan['bad']))
+        elif fan['bad'] >= int(warn[2]):
+            if ret < 1:
+                ret = 1
             message.append("{} fan failed".format(fan['bad']))
         else:
             message.append("{} fan OK".format(fan['good']))
@@ -246,14 +249,15 @@ def _check_avail(status, strType, strObject):
         message.append("{} {} status {} ({})\n".format(strType, strObject, ltmVsStatusAvailState[status][0], ltmVsStatusAvailState[status][1]))
         if status == 4:
             retcode = 3
-        elif status == 1 or status == 5:
+        elif status == 2 or status == 5:
             retcode = 1
         elif status == 0 or status == 3:
             retcode = 2
     return retcode
 
 
-def _get_stats(cnx_actives, cnx_max, cnx_total, bytes_in, bytes_out, warn, crit):
+def _get_stats(cnx_actives, cnx_max, cnx_total, bytes_in, bytes_out, warn, crit, name):
+    name = name.replace("/","")
     retcode, ret = 0, 0
     # check actives connections
     cnx_actives = int(cnx_actives)
@@ -265,7 +269,7 @@ def _get_stats(cnx_actives, cnx_max, cnx_total, bytes_in, bytes_out, warn, crit)
     if ret > retcode:
         retcode = ret
     if args.perfdata:
-        perfmsg.append("'cnx_actv'={};{};{}".format(str(cnx_actives), str(warn[0]), str(crit[0])))
+        perfmsg.append("'{}_cnx_actv'={};{};{}".format(str(name), str(cnx_actives), str(warn[0]), str(crit[0])))
     # check total connections
     ret = 0
     cnx_total = int(cnx_total)
@@ -277,13 +281,13 @@ def _get_stats(cnx_actives, cnx_max, cnx_total, bytes_in, bytes_out, warn, crit)
     if ret > retcode:
         retcode = ret
     if args.perfdata:
-        perfmsg.append("'cnx_total'={};{};{}".format(str(cnx_total), str(warn[2]), str(crit[2])))
+        perfmsg.append("'{}_cnx_total'={};{};{}".format(str(name), str(cnx_total), str(warn[2]), str(crit[2])))
     message.append( " - bytes in: {}, bytes out: {}\n".format(bytes_in, bytes_out))
     if args.perfdata:
-        perfmsg.append("'bytes_in'=".format(bytes_in))
-        perfmsg.append("'bytes_out'=".format(bytes_out))
+        perfmsg.append("'{}_bytes_in'={}".format(str(name),bytes_in))
+        perfmsg.append("'{}_bytes_out'={}".format(str(name),bytes_out))
     return retcode
-    
+
 
 def get_vs_stats(vsfilter, perfdata=False):
     '''
@@ -319,7 +323,7 @@ perfdata are computed and appended to the output.
     if isinstance(args.critical,str) and args.critical is not None:
         crit = tuple(args.critical.split(','))
     retcode = 0
-    
+
     vals = snmpSession.walk( netsnmp.VarList(
         netsnmp.Varbind('.1.3.6.1.4.1.3375.2.2.10.13.2.1.1'),   # Virtual Server name
         netsnmp.Varbind('.1.3.6.1.4.1.3375.2.2.10.13.2.1.2'),   # status
@@ -332,7 +336,7 @@ perfdata are computed and appended to the output.
     if vals:
         for name1, status, name2, cnx_actives, cnx_max, cnx_total, bytes_in, bytes_out in tuple( vals[i:i+8] for i in range(0, len(vals), 8)):
             if regex is not None:
-                if re.match(regex, name1) != None:
+                if re.match(regex, name1) is None:
                     continue
             # VS name match
             if name1 != name2:
@@ -340,19 +344,20 @@ perfdata are computed and appended to the output.
                 retcode = 3
             # check status
             retcode = _check_avail(int(status), 'VirtualServer', name1)
-            ret = _get_stats(cnx_actives, cnx_max, cnx_total, bytes_in, bytes_out, warn, crit)
+            ret = _get_stats(cnx_actives, cnx_max, cnx_total, bytes_in, bytes_out, warn, crit, name1)
             if ret < 3 and ret > retcode:
                 retcode = ret
     else:
         retcode = 3
         message.append('Failed to retrieve VirtualServer data')
-    
+
     return retcode
 
 
-def get_node_stats(perfdata=False):
+def get_node_stats(nodefilter, perfdata=False):
     """
 Get statistics for Nodes, the 'real' servers behind the Load Balancer.
+The target node is passed as `--arg1` parameter.
 
 The check returns for each node found the following informations:
 * Node name and status,
@@ -372,6 +377,12 @@ Additionally, if `--perfdata` command-line argument is triggered, Nagios
 perfdata are computed and appended to the output.
 
     """
+
+    regex = None
+    retcode = 3
+    if nodefilter is not None:
+        regex = re.compile(nodefilter)
+
     warn = ('200000','200000','200000')
     if isinstance(args.warning,str) and args.warning is not None:
         warn = tuple(args.warning.split(','))
@@ -390,15 +401,18 @@ perfdata are computed and appended to the output.
     ))
     if vals:
         for name, status, cnx_actives, cnx_max, cnx_total, bytes_in, bytes_out in tuple( vals[i:i+7] for i in range(0, len(vals), 7)):
+            if regex is not None:
+                if re.match(regex, name) is None:
+                    continue
             # check status
             retcode = _check_avail(int(status), 'Node', name)
-            ret = _get_stats(cnx_actives, cnx_max, cnx_total, bytes_in, bytes_out, warn, crit)
+            ret = _get_stats(cnx_actives, cnx_max, cnx_total, bytes_in, bytes_out, warn, crit, name)
             if ret < 3 and ret > retcode:
                 retcode = ret
     else:
         retcode = 3
         message.append('Failed to retrieve VirtualServer data')
-    
+
     return retcode
 
 
@@ -407,12 +421,12 @@ def get_http_stats(perfdata):
 Reports global HTTP requests
 
 Warning and critical triggers (respectively `-w` and `-c` command-line
-parameters) 
+parameters)
 
 If ommited, defaults to :
     -w 200000
     -c 250000
-    
+
 Additionally, if `--perfdata` command-line argument is triggered, Nagios
 perfdata are computed and appended to the output.
 
@@ -436,7 +450,8 @@ No additional arguments are required
             retcode = 2
         message.append("global HTTP requests: {}".format(val))
         if perfdata:
-            perfmsg.append("'http_req'={};{};{}".format(str(val), str(warn), str(crit)))
+            #perfmsg.append("'http_req'={};{};{}".format(str(val), str(warn), str(crit)))
+            perfmsg.append("'http_req'={}".format(str(val)))
     else:
         retcode = 3
         message.append('Failed to retrieve HTTP session data')
@@ -454,7 +469,7 @@ parameters) are exprimed as percentage values
 If ommited, defaults to :
     -w 85
     -c 95
-    
+
 Additionally, if `--perfdata` command-line argument is triggered, Nagios
 perfdata are computed and appended to the output.
 
@@ -508,7 +523,7 @@ server values, and are exprimed as percentage values
 If ommited, defaults to :
     -w 90,90
     -c 95,95
-    
+
 Additionally, if `--perfdata` command-line argument is triggered, Nagios
 perfdata are computed and appended to the output.
 
@@ -592,7 +607,7 @@ elif args.mode == 'enumvs':
 elif args.mode == 'vsstats':
     retcode = get_vs_stats(args.arg1, args.perfdata)
 elif args.mode == 'nodestats':
-    retcode = get_node_stats(args.perfdata)
+    retcode = get_node_stats(args.arg1, args.perfdata)
 elif args.mode == 'http':
     retcode = get_http_stats(args.perfdata)
 elif args.mode == 'mem_tmm':
