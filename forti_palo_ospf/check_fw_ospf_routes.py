@@ -4,10 +4,11 @@
 """
 Retrieve the number of OSPF routes on Palto Alto firewalls throught CLI by SSH
 2018-10-29 Eric Belhomme <rico-github@ricozome.net> - Initial work
+2019-07-17 Remi Verchere <remi@verchere.fr> - Corrections
 Published under MIT license
 """
 
-import argparse, paramiko, netsnmp
+import argparse, paramiko, re
 from pprint import pprint
 
 __author__ = 'Eric Belhomme'
@@ -32,17 +33,17 @@ def getPaltoAltoRoutes(fwServer, fwUser, fwPasswd):
     #     'E': 'ecmp',
     #     'M': 'multicast',
     # }
-    
+
     routes = []
     reroute = re.compile('^(?P<dest>[\d{1,3}\./]+)\s+(?P<hop>[\d{1,3}\.]+)\s+(?P<metric>\d+)\s+(?P<flags>[\?ACHS~ROBio12EM ]+)\s(?P<age>\d+)\s(?P<interface>[\w\d\.]+)\s*$')
     ssh = paramiko.SSHClient()
     ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     ssh.connect( fwServer, username=fwUser, password=fwPasswd)
     stdin, stdout, stderr = ssh.exec_command("")
-    
+
     stdin.write("show routing route type ospf\n")
     stdin.flush()
-    
+
     line = stdout.next()
     while line:
         match = reroute.match(line)
@@ -70,52 +71,54 @@ def getFortinetRoutes(fwServer, fwUser, fwPasswd):
     reroute = re.compile('^O(\*|\s)(?P<flags>N1|E1|E2)?\s+(?P<dest>[\d{1,3}\.\/]+)\s+.*via\s(?P<hop>[0-9\.]+),\s+(?P<interface>.+),\s+(((?P<agew>\d+)w)?((?P<aged>\d+)d)?((?P<ageh>\d+)h)?((?P<agem>\d+)m)?((?P<age2h>\d+):(?P<age2m>\d+):\d+)?)\s*$')
     ssh = paramiko.SSHClient()
     ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    ssh.connect( fwServer, username=fwUser, password=fwPasswd)
-    stdin, stdout, stderr = ssh.exec_command("get router info routing-table ospf")
-    
-#    stdin.write("get router info routing-table ospf\n")
-#    stdin.flush()
-    
-    line = stdout.next()
-    while line:
-        match = reroute.match(line)
-        if match:
-            age = 0
-            if match.group('agew') > 0:
-                age += int(match.group('agew')) * 7 * 86400
-            if match.group('aged') > 0:
-                age += int(match.group('aged')) * 86400
-            if match.group('ageh') > 0:
-                age += int(match.group('ageh')) * 3600
-            if match.group('age2h') > 0:
-                age += int(match.group('age2h')) * 3600
-            if match.group('agem') > 0:
-                age += int(match.group('agem')) * 60
-            if match.group('age2m') > 0:
-                age += int(match.group('age2m')) * 60
 
-            if match.group('flags') > 0:
-                flags = match.group('flags').strip().rstrip().split(' ')
-            else:
-                flags =[]
-            routes.append(
-                {
-                    'destination': match.group('dest'),
-                    'gateway': match.group('hop'),
-                    'metric': '0',
-                    'flags': flags,
-                    'age': str(age),
-                    'interface': match.group('interface'),
-                }
-            )
-        if line.endswith('$'):
-            break
-        try:
-            line = stdout.next()
-        except StopIteration:
-            break;        
+    try:
+        ssh.connect( fwServer, username=fwUser, password=fwPasswd)
+        stdin, stdout, stderr = ssh.exec_command("get router info routing-table ospf")
 
-    ssh.close()
+        line = stdout.next()
+        while line:
+            match = reroute.match(line)
+            if match:
+                age = 0
+                if match.group('agew') > 0:
+                    age += int(match.group('agew')) * 7 * 86400
+                if match.group('aged') > 0:
+                    age += int(match.group('aged')) * 86400
+                if match.group('ageh') > 0:
+                    age += int(match.group('ageh')) * 3600
+                if match.group('age2h') > 0:
+                    age += int(match.group('age2h')) * 3600
+                if match.group('agem') > 0:
+                    age += int(match.group('agem')) * 60
+                if match.group('age2m') > 0:
+                    age += int(match.group('age2m')) * 60
+
+                if match.group('flags') > 0:
+                    flags = match.group('flags').strip().rstrip().split(' ')
+                else:
+                    flags =[]
+                routes.append(
+                    {
+                        'destination': match.group('dest'),
+                        'gateway': match.group('hop'),
+                        'metric': '0',
+                        'flags': flags,
+                        'age': str(age),
+                        'interface': match.group('interface'),
+                    }
+                )
+            if line.endswith('$'):
+                break
+            try:
+                line = stdout.next()
+            except StopIteration:
+                break;
+
+        ssh.close()
+    except Exception as e:
+        print("Connection error {}".format(e))
+
     return routes
 
 
@@ -148,7 +151,7 @@ if len(routes) <= args.critical:
     message = "CRITICAL: "
 
 if len(routes) == 0:
-    message += "{} no active routes found.\n"
+    message += "no active routes found.\n"
 else:
     message += "{} active routes found :\n".format(len(routes))
     for route in routes:
